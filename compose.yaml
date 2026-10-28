@@ -1,0 +1,130 @@
+# Dependency stack for local development (no profile). Run through scripts/up.sh.
+# postgres, mailpit, s3 and the one-shot s3-init (bucket creation) are defined.
+name: ${COMPOSE_PROJECT_NAME:-kd-docker}
+
+services:
+  postgres:
+    # Thin own image on the official postgres image (docs/decisions/0001-postgis-image.md).
+    # The local tag below is fixed and the image is built only when missing, so a changed pin in
+    # versions.env or postgres/Dockerfile needs `scripts/up.sh --build`.
+    # Every build gives the image a new digest and Compose then recreates this container, so a plain
+    # start must not build (docs/smoke-runs/phase1.md, step 4).
+    build:
+      context: ./postgres
+      args:
+        POSTGRES_BASE: ${POSTGRES_IMAGE}
+        POSTGIS_PACKAGE_VERSION: ${POSTGIS_PACKAGE_VERSION}
+    image: kd-postgres:18-postgis-3.6
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8 --locale=C.UTF-8
+      KD_DATABASE: ${KD_DATABASE}
+      KD_MIGRATOR_PASSWORD: ${KD_MIGRATOR_PASSWORD}
+      KD_APP_PASSWORD: ${KD_APP_PASSWORD}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT}:5432"
+    volumes:
+      # PostgreSQL 18 keeps its data below /var/lib/postgresql (PGDATA is /var/lib/postgresql/18/docker).
+      - pgdata:/var/lib/postgresql
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -h 127.0.0.1 on purpose: the temporary server of the init phase listens on the Unix socket only,
+      # so a TCP check turns healthy only after the init scripts are done.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U kd_migrator -d ${KD_DATABASE}"]
+      interval: 5s
+      retries: 12
+      start_period: 10s
+    mem_limit: 512m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: dev
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  mailpit:
+    image: ${MAILPIT_IMAGE}
+    environment:
+      # Message cap (Mailpit's default is also 500, stated here so it is visible). MP_DATABASE is not set:
+      # by default Mailpit keeps messages in a temporary file that is deleted when it exits, so a restart
+      # starts empty (P10). No UI or SMTP authentication is configured.
+      MP_MAX_MESSAGES: "500"
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT}:8025"
+    healthcheck:
+      # The image's own command: "mailpit readyz" requests /readyz of the running server and exits 0 or 1.
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    mem_limit: 64m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: dev
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  s3:
+    # SeaweedFS "weed mini": master, volume, filer and S3 in one process (docs/decisions/0002-s3-emulator.md).
+    image: ${S3_IMAGE}
+    command: ["mini", "-dir=/data"]
+    environment:
+      # SeaweedFS fallback credentials, used when no s3.json is configured.
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+    ports:
+      - "127.0.0.1:${S3_PORT}:8333"
+    volumes:
+      - s3data:/data
+    healthcheck:
+      # Any HTTP answer from the S3 port counts (an unsigned request gets an error status, so no -f).
+      # The image has no HEALTHCHECK of its own; curl is installed in it.
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://127.0.0.1:8333/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    mem_limit: 256m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: dev
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  s3-init:
+    # One-shot: creates the dev buckets and exits 0. Reuses the S3 image (it carries curl), so no extra image.
+    image: ${S3_IMAGE}
+    entrypoint: ["/bin/sh", "/s3/init.sh"]
+    command: ["kd-dev-media", "kd-dev-private"]
+    environment:
+      S3_ENDPOINT: http://s3:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+    volumes:
+      - ./s3/init.sh:/s3/init.sh:ro
+    depends_on:
+      s3:
+        condition: service_healthy
+    mem_limit: 32m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: dev
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+volumes:
+  pgdata:
+  s3data:
