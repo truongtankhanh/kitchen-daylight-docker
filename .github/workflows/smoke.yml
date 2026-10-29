@@ -1,0 +1,79 @@
+---
+# Runtime smoke test (docs/5-test-stack-and-ci.md, 5.4): the dependency stack on amd64 and arm64.
+# Risk K3 (docs/6-gotchas-and-risks.md): `ubuntu-24.04-arm` is free for public repositories only, so the matrix
+# is amd64-only while the repository is private and adds arm64 once it is public. If the label is still not
+# available then, make the matrix amd64-only and run the arm64 check by hand as an owner task.
+# The API-image steps run only when the repository variable KD_API_IMAGE_AVAILABLE is "true"
+# (the API_TAG in versions.env must then be a published tag).
+name: smoke
+
+"on":
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ github.event.repository.private && fromJSON('["ubuntu-24.04"]') || fromJSON('["ubuntu-24.04", "ubuntu-24.04-arm"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: init-env
+        run: scripts/init-env.sh 2
+      - name: up
+        run: scripts/up.sh
+      - name: verify
+        run: scripts/verify.sh
+      - name: down
+        run: scripts/down.sh
+      - name: test-up
+        if: vars.KD_API_IMAGE_AVAILABLE == 'true'
+        run: scripts/test-up.sh
+      - name: test-down
+        if: vars.KD_API_IMAGE_AVAILABLE == 'true'
+        run: scripts/test-down.sh
+      - name: Collect compose logs
+        if: failure()
+        run: |
+          mkdir -p smoke-logs
+          if [ -f .env ]; then
+            docker compose --env-file .env --env-file versions.env -f compose.yaml \
+              logs --no-color --timestamps > smoke-logs/dev.log 2>&1 || true
+          fi
+          if [ -f .env.test ]; then
+            docker compose -p kd-docker-test --env-file .env.test --env-file versions.env -f compose.test.yaml \
+              logs --no-color --timestamps > smoke-logs/test.log 2>&1 || true
+          fi
+      - name: Upload compose logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: smoke-logs-${{ matrix.os }}
+          path: smoke-logs
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Final cleanup (down -v)
+        if: always()
+        run: |
+          if [ -f .env ]; then
+            docker compose --env-file .env --env-file versions.env -f compose.yaml down -v --remove-orphans
+          fi
+          if [ -f .env.test ]; then
+            docker compose -p kd-docker-test --env-file .env.test --env-file versions.env -f compose.test.yaml down -v --remove-orphans
+          fi

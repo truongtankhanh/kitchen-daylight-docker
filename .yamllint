@@ -1,0 +1,9 @@
+extends: default
+
+rules:
+  # Pinned action SHAs and Compose command lines are longer than 80 columns.
+  line-length: disable
+  document-start: disable
+  # GitHub Actions uses the key `on`.
+  truthy:
+    check-keys: false

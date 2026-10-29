@@ -1,0 +1,14 @@
+# Used by .github/workflows/secrets.yml (docs/6-gotchas-and-risks.md, P14).
+title = "kitchen-daylight-docker"
+
+[extend]
+useDefault = true
+
+# Only the documented local placeholder and the fictional example addresses are allowed.
+[[allowlists]]
+description = "CHANGE_ME_LOCAL placeholder and fictional example addresses"
+regexes = [
+  '''CHANGE_ME_LOCAL''',
+  '''[A-Za-z0-9._-]+@kitchendaylight\.example''',
+  '''[A-Za-z0-9._-]+@example\.com''',
+]

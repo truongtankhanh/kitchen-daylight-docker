@@ -1,0 +1,113 @@
+---
+# Static checks only (docs/5-test-stack-and-ci.md, 5.4); no container starts.
+name: lint
+
+"on":
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: shellcheck scripts/*.sh s3/init.sh postgres/init/*.sh
+
+  hadolint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: hadolint
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387  # v3.5.0
+        with:
+          dockerfile: Dockerfile
+          recursive: true
+          failure-threshold: warning
+
+  yamllint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install yamllint
+        run: sudo apt-get install -y --no-install-recommends yamllint
+      - name: yamllint
+        run: yamllint .github/workflows compose.yaml compose.apps.yaml compose.test.yaml
+
+  compose-config:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Generate .env.test in a temporary folder
+        run: |
+          env_dir=$(mktemp -d)
+          echo "KD_ENV_DIR=$env_dir" >> "$GITHUB_ENV"
+          KD_ENV_DIR="$env_dir" scripts/init-env.sh
+      - name: compose config (default)
+        run: docker compose --env-file .env.example --env-file versions.env -f compose.yaml config -q
+      - name: compose config (apps)
+        run: docker compose --env-file .env.example --env-file versions.env -f compose.yaml -f compose.apps.yaml --profile apps config -q
+      - name: compose config (test)
+        run: docker compose --env-file "$KD_ENV_DIR/.env.test" --env-file versions.env -f compose.test.yaml config -q
+
+  pins-sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: deps/Dockerfile.pins matches versions.env and secrets.yml
+        run: |
+          status=0
+          for pair in POSTGRES:postgres MAILPIT:mailpit S3:s3 CADDY:caddy; do
+            key=${pair%%:*}_IMAGE
+            name=${pair##*:}
+            value=$(sed -n "s/^${key}=//p" versions.env)
+            if [ -z "$value" ] || ! grep -qxF "FROM $value AS $name" deps/Dockerfile.pins; then
+              echo "deps/Dockerfile.pins does not match $key in versions.env" >&2
+              status=1
+            fi
+          done
+          gitleaks=$(sed -n 's/^FROM \(.*\) AS gitleaks$/\1/p' deps/Dockerfile.pins)
+          digest=${gitleaks#*@}
+          if [ -z "$gitleaks" ] || ! grep -qF "ghcr.io/gitleaks/gitleaks@$digest" .github/workflows/secrets.yml; then
+            echo "deps/Dockerfile.pins does not match the gitleaks image of secrets.yml" >&2
+            status=1
+          fi
+          exit "$status"
+
+  lint-compose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: lint-compose
+        run: scripts/lint-compose.sh
+      - name: lint-compose --expect-fail (bad examples must be rejected)
+        run: |
+          for f in scripts/tests/bad-*.yaml; do
+            scripts/lint-compose.sh --expect-fail "$f"
+          done

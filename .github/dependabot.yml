@@ -1,0 +1,18 @@
+---
+# Weekly updates (docs/5-test-stack-and-ci.md, 5.4). Every update pull request must pass the smoke workflow.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+
+  # deps/Dockerfile.pins lists the base images of versions.env so that Dependabot can see them.
+  - package-ecosystem: docker
+    directory: /deps
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
