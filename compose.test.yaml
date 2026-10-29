@@ -1,0 +1,219 @@
+# End-to-end test stack (docs/5-test-stack-and-ci.md, 5.1 and 5.2). Used alone, never combined with compose.yaml,
+# so it runs beside the dev stack: its own project, its own network, ports +5, no named volumes.
+# Run it through scripts/test-up.sh with --env-file .env.test --env-file versions.env; scripts/test-down.sh always
+# runs `down -v --remove-orphans`. Start order is by health and completion only, never by sleeping:
+# postgres healthy -> s3 healthy -> s3-init completed -> migrate completed -> seed completed -> api healthy.
+# The init folders (postgres/init, s3/init.sh), the postgres build and the image variables are the dev stack's own.
+name: ${COMPOSE_PROJECT_NAME:-kd-docker-test}
+
+services:
+  postgres:
+    # Same thin image as the dev stack (docs/decisions/0001-postgis-image.md): the same local tag, so one build serves both.
+    build:
+      context: ./postgres
+      args:
+        POSTGRES_BASE: ${POSTGRES_IMAGE}
+        POSTGIS_PACKAGE_VERSION: ${POSTGIS_PACKAGE_VERSION}
+    image: kd-postgres:18-postgis-3.6
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8 --locale=C.UTF-8
+      KD_DATABASE: ${KD_DATABASE}
+      KD_MIGRATOR_PASSWORD: ${KD_MIGRATOR_PASSWORD}
+      KD_APP_PASSWORD: ${KD_APP_PASSWORD}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT}:5432"
+    # Data on tmpfs: fast, and gone with the container. The path is the same as in the dev stack (PostgreSQL 18 keeps
+    # PGDATA below /var/lib/postgresql). The size cap keeps a runaway suite from filling the host's memory.
+    tmpfs:
+      - /var/lib/postgresql:size=256m
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -h 127.0.0.1 on purpose: the temporary server of the init phase listens on the Unix socket only,
+      # so a TCP check turns healthy only after the init scripts are done.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U kd_migrator -d ${KD_DATABASE}"]
+      interval: 5s
+      retries: 12
+      start_period: 10s
+    mem_limit: 512m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: test
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  mailpit:
+    image: ${MAILPIT_IMAGE}
+    environment:
+      MP_MAX_MESSAGES: "500"
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    mem_limit: 32m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: test
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  s3:
+    image: ${S3_IMAGE}
+    command: ["mini", "-dir=/data"]
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+    ports:
+      - "127.0.0.1:${S3_PORT}:8333"
+    tmpfs:
+      - /data
+    healthcheck:
+      # Any HTTP answer from the S3 port counts (an unsigned request gets an error status, so no -f).
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://127.0.0.1:8333/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    mem_limit: 176m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: test
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  s3-init:
+    # One-shot: creates the test buckets and exits 0, with the dev stack's script.
+    image: ${S3_IMAGE}
+    entrypoint: ["/bin/sh", "/s3/init.sh"]
+    command: ["kd-test-media", "kd-test-private"]
+    environment:
+      S3_ENDPOINT: http://s3:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+    volumes:
+      - ./s3/init.sh:/s3/init.sh:ro
+    depends_on:
+      s3:
+        condition: service_healthy
+    mem_limit: 32m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: test
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  migrate:
+    image: ghcr.io/truongtankhanh/kitchen-daylight-api:${API_TAG}
+    # Same command variable as compose.apps.yaml (docs/api-contract.md).
+    command: "${API_MIGRATE_CMD:-node dist/cli.js migrate}"
+    environment:
+      APP_ENV: test
+      # The migration role owns the schema (DDL); the API itself runs as kd_app.
+      DATABASE_URL: "postgres://kd_migrator:${KD_MIGRATOR_PASSWORD}@postgres:5432/${KD_DATABASE}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    mem_limit: 256m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: test
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  seed:
+    # One-shot: the fixed synthetic data set (seed reference, business, demo), written with --commit because the
+    # seed tool is a dry run otherwise. Same image and kd_migrator URL as migrate; the seed itself is the API's (R10).
+    image: ghcr.io/truongtankhanh/kitchen-daylight-api:${API_TAG}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "set -e; for mode in reference business demo; do ${API_SEED_CMD:-node dist/cli.js seed} $$mode --commit; done"
+    environment:
+      APP_ENV: test
+      DATABASE_URL: "postgres://kd_migrator:${KD_MIGRATOR_PASSWORD}@postgres:5432/${KD_DATABASE}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 256m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: test
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  api:
+    image: ghcr.io/truongtankhanh/kitchen-daylight-api:${API_TAG}
+    environment:
+      # The API accepts APP_ENV=test only with emulator adapters, which are the ones set below.
+      APP_ENV: test
+      PORT: "3000"
+      DATABASE_URL: "postgres://kd_app:${KD_APP_PASSWORD}@postgres:5432/${KD_DATABASE}"
+      MAIL_ADAPTER: smtp
+      MAIL_SMTP_HOST: mailpit
+      MAIL_SMTP_PORT: "1025"
+      STORAGE_ADAPTER: s3
+      STORAGE_S3_ENDPOINT: http://s3:8333
+      STORAGE_S3_REGION: us-east-1
+      STORAGE_S3_FORCE_PATH_STYLE: "true"
+      STORAGE_S3_ACCESS_KEY: "${S3_ACCESS_KEY}"
+      STORAGE_S3_SECRET_KEY: "${S3_SECRET_KEY}"
+      STORAGE_S3_BUCKET_MEDIA: kd-test-media
+      STORAGE_S3_BUCKET_PRIVATE: kd-test-private
+      GEOCODE_ADAPTER: fixture
+      # Empty until test-up.sh writes them (ADR-0003), so the API's startup validation fails fast.
+      JWT_PRIVATE_KEY: "${JWT_PRIVATE_KEY:-}"
+      JWT_PUBLIC_KEY: "${JWT_PUBLIC_KEY:-}"
+      JWT_KEY_ID: "${JWT_KEY_ID:-}"
+      OTP_HMAC_SECRET: "${OTP_HMAC_SECRET}"
+    ports:
+      # The only port with an opt-in: KD_BIND_ADDRESS=0.0.0.0 lets a phone on the LAN reach the API (Maestro).
+      # test-up.sh prints a warning then. The default is loopback; postgres, mailpit and s3 never leave it.
+      - "${KD_BIND_ADDRESS:-127.0.0.1}:${API_PORT}:3000"
+    depends_on:
+      # migrate and s3-init are reached through seed.
+      seed:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    mem_limit: 384m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: test
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"

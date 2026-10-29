@@ -1,0 +1,6 @@
+# Bad example for scripts/lint-compose.sh --expect-fail: a port published on every interface.
+services:
+  postgres:
+    image: postgres:18-trixie
+    ports:
+      - "5432:5432"

@@ -5,13 +5,14 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/print-env.sh [--shell]
+Usage: scripts/print-env.sh [--shell] [--env-file <name>]
 
 Prints KEY=value lines built from .env. The variable names are a contract with the monorepo.
 Passwords are the local placeholders of .env and must be URL-safe (they are placed in URLs as written).
 
-  --shell   print "export KEY='value'" lines, ready for eval "$(scripts/print-env.sh --shell)"
-  --help    show this text
+  --shell             print "export KEY='value'" lines, ready for eval "$(scripts/print-env.sh --shell)"
+  --env-file <name>   read this file of the repository root instead of .env (scripts/test-up.sh uses .env.test)
+  --help              show this text
 
 Exit codes: 0 ok, 2 usage error, no .env, or a variable missing from .env.
 EOF
@@ -22,27 +23,33 @@ log() { printf '[kd] %s\n' "$*"; }
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 shell_mode=0
-for arg in "$@"; do
-  case "$arg" in
+env_file=.env
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     -h|--help) usage; exit 0 ;;
-    --shell) shell_mode=1 ;;
-    *) log "unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+    --shell) shell_mode=1; shift ;;
+    --env-file)
+      if [ "$#" -lt 2 ]; then log "--env-file needs a file name" >&2; exit 2; fi
+      env_file=$2
+      shift 2
+      ;;
+    *) log "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-if [ ! -f .env ]; then
-  log ".env not found; run scripts/init-env.sh <slot>" >&2
+if [ ! -f "$env_file" ]; then
+  log "$env_file not found; run scripts/init-env.sh <slot>" >&2
   exit 2
 fi
 set -a
 # shellcheck source=/dev/null
-. ./.env
+. "./$env_file"
 set +a
 
 for name in POSTGRES_PORT KD_DATABASE KD_MIGRATOR_PASSWORD KD_APP_PASSWORD MAILPIT_SMTP_PORT \
   MAILPIT_UI_PORT S3_PORT S3_ACCESS_KEY S3_SECRET_KEY APP_ENV; do
   if [ -z "${!name:-}" ]; then
-    log ".env is missing $name; run scripts/init-env.sh <slot> --force" >&2
+    log "$env_file is missing $name; run scripts/init-env.sh <slot> --force" >&2
     exit 2
   fi
 done

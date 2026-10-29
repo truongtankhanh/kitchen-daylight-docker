@@ -1,0 +1,6 @@
+# Bad example for scripts/lint-compose.sh --expect-fail: the KD_BIND_ADDRESS opt-in with a default that is not loopback.
+services:
+  api:
+    image: example/api:1.0.0
+    ports:
+      - "${KD_BIND_ADDRESS:-0.0.0.0}:3000:3000"

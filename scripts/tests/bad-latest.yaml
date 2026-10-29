@@ -1,0 +1,6 @@
+# Bad example for scripts/lint-compose.sh --expect-fail: an image on the latest tag.
+services:
+  postgres:
+    image: postgres:latest
+    ports:
+      - "127.0.0.1:5432:5432"

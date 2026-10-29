@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Placeholder: admin build not mounted</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5; }
+    code { background: #eee; padding: 0.1em 0.3em; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>This is a placeholder page</h1>
+  <p>
+    The local Caddy of <code>kitchen-daylight-docker</code> is running, but no admin build is mounted, so this
+    page is served instead. The API is proxied under <code>/api</code> and <code>/socket.io</code>.
+  </p>
+  <p>
+    To serve the real admin, set <code>ADMIN_DIST</code> in <code>.env</code> to the folder that holds the build
+    (it is mounted read-only as <code>/srv</code>), then run <code>scripts/up.sh --apps</code> again.
+  </p>
+</body>
+</html>

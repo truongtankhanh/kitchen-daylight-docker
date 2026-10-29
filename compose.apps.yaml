@@ -1,0 +1,117 @@
+# Profile "apps": the migration job and the API (from the image the monorepo publishes) and Caddy in front of them.
+# It only adds services; it never changes a service of compose.yaml (docs/3-compose-files-and-profiles.md, 3.2).
+# Run it through scripts/up.sh --apps. Everything this file assumes about the image (name, commands, health path,
+# variable names) is listed in docs/api-contract.md and is not confirmed by the monorepo yet.
+# The image owner (a GitHub account, lowercase as GHCR requires) is written in both services; API_TAG is in versions.env.
+
+services:
+  migrate:
+    image: ghcr.io/truongtankhanh/kitchen-daylight-api:${API_TAG}
+    profiles: [apps]
+    # One line to change if the monorepo's command differs (docs/api-contract.md); set API_MIGRATE_CMD in .env to override.
+    command: "${API_MIGRATE_CMD:-node dist/cli.js migrate}"
+    environment:
+      APP_ENV: dev
+      # The migration role owns the schema (DDL); the API itself runs as kd_app.
+      DATABASE_URL: "postgres://kd_migrator:${KD_MIGRATOR_PASSWORD}@postgres:5432/${KD_DATABASE}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # First guess for a one-shot Node job; not measured (no image yet).
+    mem_limit: 256m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: dev
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  api:
+    image: ghcr.io/truongtankhanh/kitchen-daylight-api:${API_TAG}
+    profiles: [apps]
+    environment:
+      # Fixed on purpose: there is no way to start a prod configuration from this repository.
+      APP_ENV: dev
+      PORT: "3000"
+      DATABASE_URL: "postgres://kd_app:${KD_APP_PASSWORD}@postgres:5432/${KD_DATABASE}"
+      # Adapters point at the dependency services by service name and container port, not at 127.0.0.1.
+      MAIL_ADAPTER: smtp
+      MAIL_SMTP_HOST: mailpit
+      MAIL_SMTP_PORT: "1025"
+      STORAGE_ADAPTER: s3
+      STORAGE_S3_ENDPOINT: http://s3:8333
+      STORAGE_S3_REGION: us-east-1
+      STORAGE_S3_FORCE_PATH_STYLE: "true"
+      STORAGE_S3_ACCESS_KEY: "${S3_ACCESS_KEY}"
+      STORAGE_S3_SECRET_KEY: "${S3_SECRET_KEY}"
+      STORAGE_S3_BUCKET_MEDIA: kd-dev-media
+      STORAGE_S3_BUCKET_PRIVATE: kd-dev-private
+      GEOCODE_ADAPTER: fixture
+      # ES256 key pair (base64 of the PEM) and its kid, written to .env by scripts/gen-dev-secrets.sh (ADR-0003).
+      # Empty until then, so the API's startup validation fails fast instead of running with a made-up key.
+      JWT_PRIVATE_KEY: "${JWT_PRIVATE_KEY:-}"
+      JWT_PUBLIC_KEY: "${JWT_PUBLIC_KEY:-}"
+      JWT_KEY_ID: "${JWT_KEY_ID:-}"
+      OTP_HMAC_SECRET: "${OTP_HMAC_SECRET}"
+    ports:
+      - "127.0.0.1:${API_PORT}:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      s3-init:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      # Assumes the image carries node (no curl or wget) and answers 200 on /api/health, the global prefix being
+      # /api because Caddy passes the path on unchanged (docs/api-contract.md).
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    mem_limit: 384m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: dev
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  caddy:
+    # Production-like routing on one host: /api and /socket.io to the API, everything else to the admin build.
+    image: ${CADDY_IMAGE}
+    profiles: [apps]
+    ports:
+      - "127.0.0.1:${CADDY_PORT}:80"
+    volumes:
+      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      # The admin build; the default is a placeholder page. Set ADMIN_DIST in .env to a built folder.
+      - ${ADMIN_DIST:-./caddy/placeholder}:/srv:ro
+    # Keeps Caddy's /data and /config out of anonymous volumes (nothing there is worth keeping without TLS).
+    tmpfs:
+      - /data
+      - /config
+    # host.docker.internal for pointing a path at the host's `ng serve`; also works on Linux runners (P7).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # Busybox wget of the alpine image against the route that Caddyfile.dev answers itself.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/__kd_health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    mem_limit: 64m
+    restart: "no"
+    labels:
+      com.kitchen-daylight.stack: dev
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"

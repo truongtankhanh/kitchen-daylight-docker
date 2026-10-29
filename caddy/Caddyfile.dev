@@ -1,0 +1,40 @@
+# Caddy for the "apps" profile: one host serves the admin at / and the API at /api, as in production (ADR-0004).
+# Plain HTTP on port 80 inside the container (published on 127.0.0.1:${CADDY_PORT} by compose.apps.yaml); no TLS.
+# Mounted read-only as /etc/caddy/Caddyfile; the admin build is mounted as /srv.
+{
+	# No certificates, no redirects to HTTPS, and no admin API socket in the container.
+	auto_https off
+	admin off
+}
+
+:80 {
+	# Answers the container health check even when /srv has no index.html.
+	handle /__kd_health {
+		respond "ok" 200
+	}
+
+	# The path is passed on unchanged, so the API must serve /api/* itself (docs/api-contract.md).
+	# WebSocket upgrades (Socket.IO) are proxied by reverse_proxy without extra settings.
+	@api path /api/* /socket.io/*
+	handle @api {
+		reverse_proxy api:3000
+	}
+
+	# To work on the admin with the host's `ng serve` instead of a build, replace the last block below with:
+	#
+	#   handle {
+	#     reverse_proxy host.docker.internal:4200
+	#   }
+	#
+	# On Docker Desktop (macOS, Windows) this reaches a dev server that listens on localhost. On Linux the
+	# name resolves to the Docker bridge gateway, so the dev server must listen there (for example
+	# `ng serve --host 0.0.0.0`, which also exposes it on your network; mind the firewall).
+	# The same form works for a single path: `handle /admin/* { reverse_proxy host.docker.internal:4200 }`.
+
+	# The admin build (default: the placeholder page), with a fallback to index.html for client-side routes.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

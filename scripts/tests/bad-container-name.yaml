@@ -1,0 +1,7 @@
+# Bad example for scripts/lint-compose.sh --expect-fail: a fixed container name blocks parallel projects.
+services:
+  postgres:
+    image: postgres:18-trixie
+    container_name: kd-postgres
+    ports:
+      - "127.0.0.1:5432:5432"

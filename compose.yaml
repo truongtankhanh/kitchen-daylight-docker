@@ -61,7 +61,7 @@ services:
       timeout: 3s
       retries: 12
       start_period: 10s
-    mem_limit: 64m
+    mem_limit: 32m
     restart: "no"
     labels:
       com.kitchen-daylight.stack: dev
@@ -91,7 +91,7 @@ services:
       timeout: 3s
       retries: 12
       start_period: 10s
-    mem_limit: 256m
+    mem_limit: 176m
     restart: "no"
     labels:
       com.kitchen-daylight.stack: dev

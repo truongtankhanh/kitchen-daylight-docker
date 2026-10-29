@@ -83,6 +83,13 @@ if [ ! -f .env ]; then
   exit 2
 fi
 
+# Compose lets a variable exported by the calling shell win over .env. Load .env here, as the other scripts do, so a
+# stale value from an earlier "set -a; . ./.env" cannot replace the current one (found in the phase 3 test run).
+set -a
+# shellcheck source=/dev/null
+. ./.env
+set +a
+
 files=(-f compose.yaml)
 if [ "$apps" = 1 ]; then
   if [ ! -f compose.apps.yaml ]; then
