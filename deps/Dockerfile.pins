@@ -4,7 +4,7 @@
 # opens a pull request for this file, copy the new "tag@digest" into versions.env in the same
 # pull request, so that the smoke workflow tests it. The gitleaks line must equal the image of
 # .github/workflows/secrets.yml. The lint workflow fails when any line drifts.
-FROM postgres:18-trixie@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 AS postgres
+FROM postgres:18-trixie@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81 AS postgres
 FROM axllent/mailpit:v1.32.0@sha256:0790692be935ea4420d085694f7985b1f692ca6a8771ab0e0bd8ba75ac180498 AS mailpit
 FROM chrislusf/seaweedfs:4.51@sha256:f7a49e3f3972ebed5be2ed4befa4a0c68eb7bdddba6e692d42729ceb545134b8 AS s3
 FROM caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f AS caddy
