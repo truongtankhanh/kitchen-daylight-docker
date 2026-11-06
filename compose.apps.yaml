@@ -35,6 +35,8 @@ services:
       # Fixed on purpose: there is no way to start a prod configuration from this repository.
       APP_ENV: dev
       PORT: "3000"
+      # One proxy hop (Caddy) in front of the API; the API reads the client IP from X-Forwarded-For (kitchen-daylight decision 0007, section 5).
+      TRUST_PROXY_HOPS: "1"
       DATABASE_URL: "postgres://kd_app:${KD_APP_PASSWORD}@postgres:5432/${KD_DATABASE}"
       # Adapters point at the dependency services by service name and container port, not at 127.0.0.1.
       MAIL_ADAPTER: smtp
